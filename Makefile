@@ -24,3 +24,8 @@ install:
 		install -d $(DESTDIR)$(PREFIX)/man/man1
 		install -m 755 mgitstatus $(DESTDIR)$(PREFIX)/bin/
 		install mgitstatus.1 $(DESTDIR)$(PREFIX)/man/man1/
+
+.PHONY: uninstall
+uninstall:
+		rm $(DESTDIR)$(PREFIX)/bin/mgitstatus
+		rm $(DESTDIR)$(PREFIX)/man/man1/mgitstatus.1
