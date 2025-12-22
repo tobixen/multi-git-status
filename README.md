@@ -7,6 +7,25 @@ The default is 2.  If **DEPTH** is 0, the scan is infinitely deep.
 
 ![](https://raw.githubusercontent.com/fboender/multi-git-status/master/screenshot.png)
 
+## Fork Information
+
+This is a fork of [fboender/multi-git-status](https://github.com/fboender/multi-git-status) that integrates several open pull requests and adds new functionality.
+
+### Integrated Pull Requests
+
+| PR | Author | Description |
+|----|--------|-------------|
+| [#62](https://github.com/fboender/multi-git-status/pull/62) | bailey-coding | Support reftable refs format (newer git storage format) |
+| [#61](https://github.com/fboender/multi-git-status/pull/61) | loelkes | Add `make uninstall` target |
+| [#53](https://github.com/fboender/multi-git-status/pull/53) | abathur | Find git-dir directly and look up work-tree (improved repo detection) |
+| [#51](https://github.com/fboender/multi-git-status/pull/51) | lyknode | Fix man install path (use /share/man/man1 for FHS compliance) |
+| [#27](https://github.com/fboender/multi-git-status/pull/27) | cipherbrain | Add list file support (-l/--list and -s/--save-list options) |
+
+### Additional Features
+
+* `-b` option to show currently checked out branch
+* `--no-ok` as an alias for `-e`
+
 mgitstatus shows:
 
 * **Uncommitted changes** if there are unstaged or uncommitted changes on the
@@ -40,15 +59,19 @@ for that repo to `true`. (See "usage" below for an example).
     changed with the -d (--depth) option.  If DEPTH is 0, the scan is infinitely
     deep.
 
-      --version        Show version
-      -w               Warn about dirs that are not Git repositories
-      -e               Exclude repos that are 'ok'
-      -f               Do a 'git fetch' on each repo (slow for many repos)
-      --throttle SEC   Wait SEC seconds between each 'git fetch' (-f option)
+      -b               Show currently checked out branch
       -c               Force color output (preserve colors when using pipes)
       -d, --depth=2    Scan this many directories deep
-      --no-depth       Do not recurse into directories (incompatible with -d)
+      -e               Exclude repos that are 'ok'
+      -f               Do a 'git fetch' on each repo (slow for many repos)
+      -h, --help       Show help message
+      -l, --list FILE  Use list of repo paths from FILE instead of searching
+      -s, --save-list FILE  Search for repos and save paths to FILE, then exit
       --flatten        Show only one status per line
+      --no-depth       Do not recurse into directories (incompatible with -d)
+      --throttle SEC   Wait SEC seconds between each 'git fetch' (-f option)
+      --version        Show version
+      -w               Warn about dirs that are not Git repositories
 
     You can limit output with the following options:
 
@@ -59,6 +82,8 @@ for that repo to `true`. (See "usage" below for an example).
       --no-untracked
       --no-stashes
       --no-ok          (same as -e)
+
+    The list file may contain comments (lines starting with '#') and empty lines.
 
 The following example scans all directories under the current dir, with a
 depth of 2. That means the current dir and all directories directly under it.
