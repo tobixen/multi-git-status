@@ -21,6 +21,8 @@ deep.
   -e               Exclude repos that are 'ok'
   -f               Do a 'git fetch' on each repo (slow for many repos)
   -h, --help       Show this help message
+  -l, --list FILE  Use list of repo paths from FILE instead of searching
+  -s, --save-list FILE  Search for repos and save paths to FILE, then exit
   --flatten        Show only one status per line
   --no-depth       Do not recurse into directories (incompatible with -d)
   --throttle SEC   Wait SEC seconds between each 'git fetch' (-f option)
@@ -36,7 +38,9 @@ You can limit output with the following options:
   --no-untracked
   --no-stashes
   --no-ok          (same as -e)
-    
+
+The list file may contain comments (lines starting with '#') and empty lines.
+
 EOF
 }
 
@@ -56,6 +60,8 @@ NO_DEPTH=0
 THROTTLE=0
 DEPTH=2
 SHOW_CUR_BRANCH=0
+LIST=""
+SAVE_LIST=""
 
 while [ -n "$1" ]; do
     # Stop reading when we've run out of options.
@@ -135,6 +141,14 @@ while [ -n "$1" ]; do
     if [ "$1" = "-w" ]; then
         WARN_NOT_REPO=1
     fi
+    if [ "$1" = "-l" ] || [ "$1" = "--list" ]; then
+        LIST="$2"
+        shift
+    fi
+    if [ "$1" = "-s" ] || [ "$1" = "--save-list" ]; then
+        SAVE_LIST="$2"
+        shift
+    fi
 
     shift
 done
@@ -160,6 +174,35 @@ C_NEEDS_UPSTREAM="$C_PURPLE"
 C_UNTRACKED="$C_CYAN"
 C_STASHES="$C_YELLOW"
 C_UNSAFE="$C_PURPLE"
+
+# Handle --save-list: scan for repos and save to file, then exit
+if [ -n "$SAVE_LIST" ]; then
+    temp="$(mktemp)"
+    (
+        # Preserve existing entries if file exists
+        if [ -f "$SAVE_LIST" ]; then
+            cat "$SAVE_LIST"
+        fi
+        # Scan directories for git repos
+        for DIR in "${@:-"."}"; do
+            # shellcheck disable=SC2086
+            find -L "$DIR" $FIND_OPTS -type d -name "*.git" -prune 2>/dev/null | while read -r GIT_DIR
+            do
+                PROJ_DIR="$(cd "$GIT_DIR" && cd .. && pwd)"
+                GIT_CONF="$GIT_DIR/config"
+                # Check if repo should be ignored
+                IGNORE=$(git config -f "$GIT_CONF" --bool mgitstatus.ignore 2>/dev/null)
+                if [ "$IGNORE" = "true" ]; then
+                    continue
+                fi
+                echo "$PROJ_DIR"
+            done
+        done
+    ) | awk '$0 ~ /^\s*(#|$)/ || !seen[$0]++' > "$temp"
+    mv "$temp" "$SAVE_LIST"
+    echo "Saved repository list to $SAVE_LIST"
+    exit 0
+fi
 
 # Get current username so we can check .git dir ownership.
 ID="$(id -n -u)"
@@ -195,13 +238,12 @@ find_git_work_tree()(
     fi
 )
 
-# Go through positional arguments (DIRs) or '.' if no arguments are given
-for DIR in "${@:-"."}"; do
-    # We *want* to expand parameters, so disable shellcheck for this error:
-    # shellcheck disable=SC2086
-    find -L "$DIR" $FIND_OPTS -type d -name "*.git" -prune | while read -r GIT_DIR
+# Process repos either from list file or by scanning directories
+if [ -n "$LIST" ]; then
+    # Read from list file - each line is a project directory
+    grep -v '^\s*#' "$LIST" | grep -v '^\s*$' | while read -r PROJ_DIR
     do
-        PROJ_DIR="$(find_git_work_tree "$GIT_DIR")"
+        GIT_DIR="$PROJ_DIR/.git"
         GIT_CONF="$GIT_DIR/config"
 
         # Check if the repo is safe (https://github.blog/2022-04-12-git-security-vulnerability-announced/)
@@ -254,7 +296,7 @@ for DIR in "${@:-"."}"; do
         # they need a push or pull. We do this with various tests and put the name
         # of the branches in NEEDS_XXXX, seperated by newlines. After we're done,
         # we remove duplicates from NEEDS_XXX.
-        NEEDS_PUSH_BRANCHES="" 
+        NEEDS_PUSH_BRANCHES=""
         NEEDS_PULL_BRANCHES=""
         NEEDS_UPSTREAM_BRANCHES=""
 
@@ -375,4 +417,186 @@ for DIR in "${@:-"."}"; do
             sleep "$THROTTLE"
         fi
     done
-done
+else
+    # Scan directories - go through positional arguments (DIRs) or '.' if no arguments are given
+    for DIR in "${@:-"."}"; do
+        # We *want* to expand parameters, so disable shellcheck for this error:
+        # shellcheck disable=SC2086
+        find -L "$DIR" $FIND_OPTS -type d -name "*.git" -prune | while read -r GIT_DIR
+        do
+            PROJ_DIR="$(find_git_work_tree "$GIT_DIR")"
+            GIT_CONF="$GIT_DIR/config"
+
+            # Check if the repo is safe (https://github.blog/2022-04-12-git-security-vulnerability-announced/)
+            if [ -d "$GIT_DIR" ]; then
+                GIT_DIR_OWNER="$(ls -ld "$GIT_DIR" | awk 'NR==1 {print $3}')"
+                if [ "$ID" != "$GIT_DIR_OWNER" ]; then
+                    printf "${PROJ_DIR}: ${C_UNSAFE}Unsafe ownership, owned by someone else. Skipping.${C_RESET}\n"
+                    continue
+                fi
+            fi
+
+            # Check git config for this project to see if we should ignore this repo.
+            IGNORE=$(git config -f "$GIT_CONF" --bool mgitstatus.ignore)
+            if [ "$IGNORE" = "true" ]; then
+                continue
+            fi
+
+            # If this dir is not a repo, and WARN_NOT_REPO is 1, tell the user.
+            if [ ! -d "$GIT_DIR" ]; then
+                if [ "$WARN_NOT_REPO" -eq 1 ] && [ "$PROJ_DIR" != "." ]; then
+                    printf "${PROJ_DIR}: not a git repo\n"
+                fi
+                continue
+            fi
+
+            [ $DEBUG -eq 1 ] && echo "${PROJ_DIR}"
+
+            # Check if repo is locked
+            if [ -f "$GIT_DIR/index.lock" ]; then
+                printf "${PROJ_DIR}: ${C_LOCKED}Locked. Skipping.${C_RESET}\n"
+                continue
+            fi
+
+            # Do a 'git fetch' if requested
+            if [ "$DO_FETCH" -eq 1 ]; then
+                git --work-tree "$PROJ_DIR" --git-dir "$GIT_DIR" fetch -q >/dev/null
+            fi
+
+            # Refresh the index, or we might get wrong results.
+            git --work-tree "$PROJ_DIR" --git-dir "$GIT_DIR" update-index -q --refresh >/dev/null 2>&1
+
+            # Get current branch, if "-b" is specified
+            if [ "$SHOW_CUR_BRANCH" -eq 1 ]; then
+                CUR_BRANCH=" ($(git --git-dir "$GIT_DIR" rev-parse --abbrev-ref HEAD))"
+            else
+                CUR_BRANCH=""
+            fi
+
+            # Find all remote branches that have been checked out and figure out if
+            # they need a push or pull. We do this with various tests and put the name
+            # of the branches in NEEDS_XXXX, seperated by newlines. After we're done,
+            # we remove duplicates from NEEDS_XXX.
+            NEEDS_PUSH_BRANCHES=""
+            NEEDS_PULL_BRANCHES=""
+            NEEDS_UPSTREAM_BRANCHES=""
+
+            for REF_HEAD in $(git --git-dir "${GIT_DIR}" for-each-ref --format='%(refname:short)' refs/heads/); do
+                # Check if this branch is tracking an upstream (local/remote branch)
+                UPSTREAM=$(git --git-dir "$GIT_DIR" rev-parse --abbrev-ref --symbolic-full-name "$REF_HEAD@{u}" 2>/dev/null)
+                EXIT_CODE="$?"
+                if [ "$EXIT_CODE" -eq 0 ]; then
+                    # Branch is tracking a remote branch. Find out how much behind /
+                    # ahead it is of that remote branch.
+                    CNT_AHEAD_BEHIND=$(git --git-dir "$GIT_DIR" rev-list --left-right --count "$REF_HEAD...$UPSTREAM")
+                    CNT_AHEAD=$(echo "$CNT_AHEAD_BEHIND" | awk '{ print $1 }')
+                    CNT_BEHIND=$(echo "$CNT_AHEAD_BEHIND" | awk '{ print $2 }')
+
+                    [ $DEBUG -eq 1 ] && echo "CNT_AHEAD_BEHIND: $CNT_AHEAD_BEHIND"
+                    [ $DEBUG -eq 1 ] && echo "CNT_AHEAD: $CNT_AHEAD"
+                    [ $DEBUG -eq 1 ] && echo "CNT_BEHIND: $CNT_BEHIND"
+
+                    if [ "$CNT_AHEAD" -gt 0 ]; then
+                        NEEDS_PUSH_BRANCHES="${NEEDS_PUSH_BRANCHES}\n$REF_HEAD"
+                    fi
+                    if [ "$CNT_BEHIND" -gt 0 ]; then
+                        NEEDS_PULL_BRANCHES="${NEEDS_PULL_BRANCHES}\n$REF_HEAD"
+                    fi
+
+                    # Check if this branch is a branch off another branch. and if it needs
+                    # to be updated.
+                    REV_LOCAL=$(git --git-dir "$GIT_DIR" rev-parse --verify "$REF_HEAD" 2>/dev/null)
+                    REV_REMOTE=$(git --git-dir "$GIT_DIR" rev-parse --verify "$UPSTREAM" 2>/dev/null)
+                    REV_BASE=$(git --git-dir "$GIT_DIR" merge-base "$REF_HEAD" "$UPSTREAM" 2>/dev/null)
+
+                    [ $DEBUG -eq 1 ] && echo "REV_LOCAL: $REV_LOCAL"
+                    [ $DEBUG -eq 1 ] && echo "REV_REMOTE: $REV_REMOTE"
+                    [ $DEBUG -eq 1 ] && echo "REV_BASE: $REV_BASE"
+
+                    if [ "$REV_LOCAL" = "$REV_REMOTE" ]; then
+                        : # NOOP
+                    else
+                        if [ "$REV_LOCAL" = "$REV_BASE" ]; then
+                            NEEDS_PULL_BRANCHES="${NEEDS_PULL_BRANCHES}\n$REF_HEAD"
+                        fi
+                        if [ "$REV_REMOTE" = "$REV_BASE" ]; then
+                            NEEDS_PUSH_BRANCHES="${NEEDS_PUSH_BRANCHES}\n$REF_HEAD"
+                        fi
+                    fi
+                else
+                    # Branch does not have an upstream (local/remote branch).
+                    NEEDS_UPSTREAM_BRANCHES="${NEEDS_UPSTREAM_BRANCHES}\n$REF_HEAD"
+                fi
+            done
+
+            # Remove duplicates from NEEDS_XXXX and make comma-seperated
+            NEEDS_PUSH_BRANCHES=$(printf "$NEEDS_PUSH_BRANCHES" | sort | uniq | tr '\n' ',' | sed "s/^,\(.*\),$/\1/")
+            NEEDS_PULL_BRANCHES=$(printf "$NEEDS_PULL_BRANCHES" | sort | uniq | tr '\n' ',' | sed "s/^,\(.*\),$/\1/")
+            NEEDS_UPSTREAM_BRANCHES=$(printf "$NEEDS_UPSTREAM_BRANCHES" | sort | uniq | tr '\n' ',' | sed "s/^,\(.*\),$/\1/")
+
+            # Find out if there are unstaged, uncommitted or untracked changes
+            UNSTAGED=$(git --work-tree "$PROJ_DIR" --git-dir "$GIT_DIR" diff-index --quiet HEAD -- 2>/dev/null; echo $?)
+            UNCOMMITTED=$(git --work-tree "$PROJ_DIR" --git-dir "$GIT_DIR" diff-files --quiet --ignore-submodules --; echo $?)
+            UNTRACKED=$(git --work-tree "$PROJ_DIR" --git-dir "$GIT_DIR" ls-files --exclude-standard --others)
+            STASHES=$(git --work-tree "$PROJ_DIR" --git-dir "$GIT_DIR" stash list | wc -l)
+
+            [ $DEBUG -eq 1 ] && echo "UNSTAGED: $UNSTAGED"
+            [ $DEBUG -eq 1 ] && echo "UNCOMMITTED: $UNCOMMITTED"
+            [ $DEBUG -eq 1 ] && echo "UNTRACKED: $UNTRACKED"
+            [ $DEBUG -eq 1 ] && echo "STASHES: $STASHES"
+
+            # Build up the status string if not flattening. Otherwise, print
+            # results immediately.
+            IS_OK=0  # 0 = Repo needs something, 1 = Repo needs nothing ('ok')
+            STATUS_NEEDS=""
+            if [ -n "$NEEDS_PUSH_BRANCHES" ] && [ "$NO_PUSH" -eq 0 ]; then
+                THIS_STATUS="${C_NEEDS_PUSH}Needs push ($NEEDS_PUSH_BRANCHES)${C_RESET}"
+                STATUS_NEEDS="${STATUS_NEEDS}${THIS_STATUS} "
+                [ "$FLATTEN" -eq 1 ] && printf "${PROJ_DIR}$CUR_BRANCH: $THIS_STATUS\n"
+            fi
+            if [ -n "$NEEDS_PULL_BRANCHES" ] && [ "$NO_PULL" -eq 0 ]; then
+                THIS_STATUS="${C_NEEDS_PULL}Needs pull ($NEEDS_PULL_BRANCHES)${C_RESET}"
+                STATUS_NEEDS="${STATUS_NEEDS}${THIS_STATUS} "
+                [ "$FLATTEN" -eq 1 ] && printf "${PROJ_DIR}$CUR_BRANCH: $THIS_STATUS\n"
+            fi
+            if [ -n "$NEEDS_UPSTREAM_BRANCHES" ] && [ "$NO_UPSTREAM" -eq 0 ]; then
+                THIS_STATUS="${C_NEEDS_UPSTREAM}Needs upstream ($NEEDS_UPSTREAM_BRANCHES)${C_RESET}"
+                STATUS_NEEDS="${STATUS_NEEDS}${THIS_STATUS} "
+                [ "$FLATTEN" -eq 1 ] && printf "${PROJ_DIR}$CUR_BRANCH: $THIS_STATUS\n"
+            fi
+            if [ "$UNSTAGED" -ne 0 ] || [ "$UNCOMMITTED" -ne 0 ] && [ "$NO_UNCOMMITTED" -eq 0 ]; then
+                THIS_STATUS="${C_NEEDS_COMMIT}Uncommitted changes${C_RESET}"
+                STATUS_NEEDS="${STATUS_NEEDS}${THIS_STATUS} "
+                [ "$FLATTEN" -eq 1 ] && printf "${PROJ_DIR}$CUR_BRANCH: $THIS_STATUS\n"
+            fi
+            if [ "$UNTRACKED" != "" ] && [ "$NO_UNTRACKED" -eq 0 ]; then
+                THIS_STATUS="${C_UNTRACKED}Untracked files${C_RESET}"
+                STATUS_NEEDS="${STATUS_NEEDS}${THIS_STATUS} "
+                [ "$FLATTEN" -eq 1 ] && printf "${PROJ_DIR}$CUR_BRANCH: $THIS_STATUS\n"
+            fi
+            if [ "$STASHES" -ne 0 ] && [ "$NO_STASHES" -eq 0 ]; then
+                THIS_STATUS="${C_STASHES}$STASHES stashes${C_RESET}"
+                STATUS_NEEDS="${STATUS_NEEDS}${THIS_STATUS} "
+                [ "$FLATTEN" -eq 1 ] && printf "${PROJ_DIR}$CUR_BRANCH: $THIS_STATUS\n"
+            fi
+            if [ "$STATUS_NEEDS" = "" ]; then
+                IS_OK=1
+                THIS_STATUS="${C_OK}ok${C_RESET}"
+                STATUS_NEEDS="${STATUS_NEEDS}${THIS_STATUS} "
+                [ "$FLATTEN" -eq 1 ] && [ "$EXCLUDE_OK" -ne 1 ] && printf "${PROJ_DIR}$CUR_BRANCH: $THIS_STATUS\n"
+            fi
+
+            if [ "$FLATTEN" -ne 1 ]; then
+                # Print the output, unless repo is 'ok' and -e was specified
+                if [ "$IS_OK" -ne 1 ] || [ "$EXCLUDE_OK" -ne 1 ]; then
+                    printf "${PROJ_DIR}$CUR_BRANCH: $STATUS_NEEDS\n"
+                fi
+            fi
+
+            # Throttle if requested
+            if [ "$DO_FETCH" -eq 1 ] && [ "$THROTTLE" -ne 0 ]; then
+                sleep "$THROTTLE"
+            fi
+        done
+    done
+fi
