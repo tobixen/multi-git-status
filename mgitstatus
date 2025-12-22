@@ -241,7 +241,7 @@ for DIR in "${@:-"."}"; do
         NEEDS_PULL_BRANCHES=""
         NEEDS_UPSTREAM_BRANCHES=""
 
-        for REF_HEAD in $(cd "$GIT_DIR/refs/heads" && find . -type 'f' | sed "s/^\.\///"); do
+        for REF_HEAD in $(git --git-dir "${GIT_DIR}" for-each-ref --format='%(refname:short)' refs/heads/); do
             # Check if this branch is tracking an upstream (local/remote branch)
             UPSTREAM=$(git --git-dir "$GIT_DIR" rev-parse --abbrev-ref --symbolic-full-name "$REF_HEAD@{u}" 2>/dev/null)
             EXIT_CODE="$?"
