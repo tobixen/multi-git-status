@@ -41,6 +41,11 @@ You can limit output with the following options:
 
 The list file may contain comments (lines starting with '#') and empty lines.
 
+Config file (~/.config/mgitstatus/config) can specify:
+
+  [skip_paths]     Glob patterns for paths to skip during scanning
+  [ignore_repos]   Glob patterns for repositories to ignore
+
 EOF
 }
 
@@ -62,6 +67,104 @@ DEPTH=2
 SHOW_CUR_BRANCH=0
 LIST=""
 SAVE_LIST=""
+SKIP_PATHS=""
+IGNORE_REPOS=""
+
+# Load config file if it exists
+# Config file format:
+#   [skip_paths]
+#   */node_modules
+#   */.cache
+#   [ignore_repos]
+#   */vendor/*
+load_config() {
+    config_file="${XDG_CONFIG_HOME:-$HOME/.config}/mgitstatus/config"
+    if [ ! -f "$config_file" ]; then
+        return
+    fi
+
+    current_section=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip empty lines and comments
+        case "$line" in
+            ""|\#*) continue ;;
+        esac
+
+        # Check for section headers
+        case "$line" in
+            \[skip_paths\]*)
+                current_section="skip_paths"
+                continue
+                ;;
+            \[ignore_repos\]*)
+                current_section="ignore_repos"
+                continue
+                ;;
+            \[*\]*)
+                current_section=""
+                continue
+                ;;
+        esac
+
+        # Add pattern to appropriate list
+        case "$current_section" in
+            skip_paths)
+                SKIP_PATHS="${SKIP_PATHS}${line}
+"
+                ;;
+            ignore_repos)
+                IGNORE_REPOS="${IGNORE_REPOS}${line}
+"
+                ;;
+        esac
+    done < "$config_file"
+}
+
+# Check if a path matches any skip pattern
+should_skip_path() {
+    _path="$1"
+    [ -z "$SKIP_PATHS" ] && return 1
+
+    _old_ifs="$IFS"
+    IFS='
+'
+    for _pattern in $SKIP_PATHS; do
+        [ -z "$_pattern" ] && continue
+        # Use case for glob matching
+        case "$_path" in
+            $_pattern)
+                IFS="$_old_ifs"
+                return 0
+                ;;
+        esac
+    done
+    IFS="$_old_ifs"
+    return 1
+}
+
+# Check if a repo path matches any ignore pattern
+should_ignore_repo() {
+    _repo_path="$1"
+    [ -z "$IGNORE_REPOS" ] && return 1
+
+    _old_ifs="$IFS"
+    IFS='
+'
+    for _pattern in $IGNORE_REPOS; do
+        [ -z "$_pattern" ] && continue
+        case "$_repo_path" in
+            $_pattern)
+                IFS="$_old_ifs"
+                return 0
+                ;;
+        esac
+    done
+    IFS="$_old_ifs"
+    return 1
+}
+
+# Load configuration
+load_config
 
 while [ -n "$1" ]; do
     # Stop reading when we've run out of options.
@@ -261,6 +364,12 @@ if [ -n "$LIST" ]; then
             continue
         fi
 
+        # Check if repo matches any ignore pattern from config
+        if should_ignore_repo "$PROJ_DIR"; then
+            [ $DEBUG -eq 1 ] && echo "Ignoring (config pattern): ${PROJ_DIR}"
+            continue
+        fi
+
         # If this dir is not a repo, and WARN_NOT_REPO is 1, tell the user.
         if [ ! -d "$GIT_DIR" ]; then
             if [ "$WARN_NOT_REPO" -eq 1 ] && [ "$PROJ_DIR" != "." ]; then
@@ -424,6 +533,12 @@ else
         # shellcheck disable=SC2086
         find -L "$DIR" $FIND_OPTS -type d -name "*.git" -prune | while read -r GIT_DIR
         do
+            # Check if path matches any skip pattern from config
+            if should_skip_path "$GIT_DIR"; then
+                [ $DEBUG -eq 1 ] && echo "Skipping (config pattern): ${GIT_DIR}"
+                continue
+            fi
+
             PROJ_DIR="$(find_git_work_tree "$GIT_DIR")"
             GIT_CONF="$GIT_DIR/config"
 
@@ -439,6 +554,12 @@ else
             # Check git config for this project to see if we should ignore this repo.
             IGNORE=$(git config -f "$GIT_CONF" --bool mgitstatus.ignore)
             if [ "$IGNORE" = "true" ]; then
+                continue
+            fi
+
+            # Check if repo matches any ignore pattern from config
+            if should_ignore_repo "$PROJ_DIR"; then
+                [ $DEBUG -eq 1 ] && echo "Ignoring (config pattern): ${PROJ_DIR}"
                 continue
             fi
 

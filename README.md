@@ -25,6 +25,7 @@ This is a fork of [fboender/multi-git-status](https://github.com/fboender/multi-
 
 * `-b` option to show currently checked out branch
 * `--no-ok` as an alias for `-e`
+* Config file support with glob patterns for skipping paths and ignoring repos
 
 mgitstatus shows:
 
@@ -97,6 +98,39 @@ depth of 2. That means the current dir and all directories directly under it.
     ./scriptform: Uncommitted changes
 
 For more examples, see the [manual page](mgitstatus.1.md).
+
+# Configuration
+
+mgitstatus supports a configuration file at `~/.config/mgitstatus/config` (or
+`$XDG_CONFIG_HOME/mgitstatus/config`).
+
+The config file uses a simple INI-like format with two sections:
+
+```ini
+# Skip paths matching these glob patterns during scanning
+[skip_paths]
+*/node_modules/*
+*/.cache/*
+*/vendor/*
+
+# Ignore repositories matching these glob patterns
+[ignore_repos]
+*/third-party/*
+*/external/*
+```
+
+**[skip_paths]** - Patterns matched against the full path during directory
+scanning. Matching paths are skipped entirely (not scanned for .git directories).
+
+**[ignore_repos]** - Patterns matched against the repository path. Matching
+repositories are not displayed in the output.
+
+Both sections support shell glob patterns (`*`, `?`, `[...]`).
+
+You can also ignore individual repos by setting a git config flag:
+
+    cd /path/to/repo
+    git config mgitstatus.ignore true
 
 # Installation
 
