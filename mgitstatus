@@ -322,7 +322,7 @@ if [ "$NO_DEPTH" -eq 1 ]; then
     # Do not recurse at all. Really, this should have been the '-d 0' option,
     # but that's already used for infinite recursion, and we don't want to
     # break backwards compatibility.
-    FIND_OPTS="$FIND_OPTS -maxdepth 0"
+    FIND_OPTS="$FIND_OPTS -maxdepth 1"
 fi
 
 
